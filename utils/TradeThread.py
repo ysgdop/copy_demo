@@ -1,4 +1,3 @@
-
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -20,8 +19,11 @@ async def process_trade(client: ClobClient, trade: dict):
         #is_buy = bool(trade.get('is_buy', 1))  # 1 或 True → BUY
         side = str(trade["side"])
         price = float(trade["price"])*1.03          # e.g. 0.5123
-        size = float(5.0)            # 股份数，支持小数 
-
+        size = float(5.5)            # 股份数，支持小数 
+        t_size = float(trade["size"])
+        if t_size < 50.0:
+            print("检测到买入少于30share，自动略过")
+            return
         #side = BUY if is_buy else SELL
         #side_str = "BUY" if is_buy else "SELL"
 
@@ -47,7 +49,7 @@ async def polling_task(interval: float = 10.0):
     async with sql:
         while True:
             try:
-                await append_trades(sql)
+                await append_trades(sql,10)
                 print("polling 完成一次")
             except Exception as e:
                 print(f"polling 异常: {e}")
@@ -55,7 +57,7 @@ async def polling_task(interval: float = 10.0):
 
 
 async def trading_task(client, interval: float = 0.2):
-    sql = AsyncPolymarketTradeManager()
+    '''sql = AsyncPolymarketTradeManager()
     async with sql:
         while True:
             try:
@@ -66,7 +68,23 @@ async def trading_task(client, interval: float = 0.2):
             except Exception as e:
                 print(f"trading 异常: {e}")
             await asyncio.sleep(interval)
+    async def trading_task(client):'''
+    async with AsyncPolymarketTradeManager() as sql:
+        while True:
 
+            trade = await sql.claim_next_trade()
+
+            if not trade:
+                await asyncio.sleep(1)
+                continue
+
+            try:
+                await process_trade(client, trade)
+                await sql.mark_done(trade["transaction_hash"])
+
+            except Exception as e:
+                print(e)
+                await sql.mark_failed(trade["transaction_hash"])
 
 
 
@@ -139,5 +157,6 @@ class TradingThread(BasePolymarketThread):
                     print(f"{self.name} 异常: {e}")
 
                 await asyncio.sleep(self.interval)
+
 
 
