@@ -1,4 +1,3 @@
-
 '''
 {
     √ "proxyWallet": "0x7d25909486569ae9351a1836bf3791508cacf2d3",
@@ -441,7 +440,7 @@ class AsyncPolymarketTradeManager:
         "slug": "slug",
         "eventSlug": "event_slug",
         "transactionHash": "transaction_hash",
-        "is_buy": "is_buy",
+        "status": "status",
         "is_sell": "is_sell",
         "is_redeem": "is_redeem"
     }
@@ -490,7 +489,7 @@ class AsyncPolymarketTradeManager:
                 {self.FIELD_MAP["slug"]}           TEXT,
                 {self.FIELD_MAP["eventSlug"]}      TEXT,
                 {self.FIELD_MAP["transactionHash"]} TEXT PRIMARY KEY NOT NULL,
-                is_buy          BOOLEAN DEFAULT 0,
+                status          TEXT DEFAULT 'pending',
                 is_sell         BOOLEAN DEFAULT 0,
                 is_redeem       BOOLEAN DEFAULT 0,
                 inserted_at     TEXT DEFAULT (datetime('now'))
@@ -514,25 +513,49 @@ class AsyncPolymarketTradeManager:
         """异步插入一条新交易"""
         # 提取核心字段
         try:
-            #  默认置为0
-            is_buy = 0 
-            is_sell = 0 
-            is_redeem = 0 
+            columns = [
+                "proxy_wallet", "side", "asset", "condition_id",
+                "size", "price", "timestamp", "slug", "event_slug",
+                "transaction_hash",
+                "status", "is_sell", "is_redeem"
+            ]
+            side = str(trade_data.get("side", "BUY")).upper()
 
-            cols = list(self.FIELD_MAP.values()) + ["is_buy", "is_sell", "is_redeem"]
-            placeholders = ", ".join(["?"] * len(cols))
-            
-            values = [trade_data.get(k) for k in self.FIELD_MAP.keys()]
-            values.extend([is_buy, is_sell, is_redeem])
+            values = [
+                trade_data.get("proxyWallet"),
+                side,
+                trade_data.get("asset"),
+                trade_data.get("conditionId"),
+                trade_data.get("size"),
+                trade_data.get("price"),
+                trade_data.get("timestamp"),
+                trade_data.get("slug"),
+                trade_data.get("eventSlug"),
+                trade_data.get("transactionHash"),
+                "pending",                          # status
+                0,         # is_sell
+                0        # is_redeem
+            ]
+
+             # 验证数量（开发时加这一行很保险）
+            if len(values) != len(columns):
+                raise ValueError(f"值数量不匹配：期望 {len(columns)}，实际 {len(values)}")
+
+            placeholders = ", ".join(["?"] * len(columns))
+            cols_str = ", ".join(columns)
 
             await self.conn.execute(
-                f"INSERT INTO trades ({', '.join(cols)}) VALUES ({placeholders})",
+                f"INSERT INTO trades ({cols_str}) VALUES ({placeholders})",
                 values
             )
             await self.conn.commit()
             return True
+
         except aiosqlite.IntegrityError:
-            # 这里的异常通常是 transaction_hash 已存在
+            # transaction_hash 已存在
+            return False
+        except ValueError as ve:
+            print(f"参数校验失败: {ve}")
             return False
         except Exception as e:
             print(f"写入数据库失败: {e}")
@@ -610,6 +633,43 @@ class AsyncPolymarketTradeManager:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+    async def claim_next_trade(self) -> Optional[Dict]:
+        """
+        原子领取一条 pending 交易
+        防止多个 worker 重复拿
+        """
+        async with self.conn.execute("""
+            UPDATE trades
+            SET status='processing'
+            WHERE rowid = (
+                SELECT rowid
+                FROM trades
+                WHERE status='pending'
+                ORDER BY timestamp ASC
+                LIMIT 1
+            )
+            AND status='pending'
+            RETURNING *
+        """) as cursor:
+            row = await cursor.fetchone()
+
+        await self.conn.commit()
+        return dict(row) if row else None
+
+    async def mark_done(self, tx_hash: str):
+        await self.conn.execute(
+            "UPDATE trades SET status='done' WHERE transaction_hash=?",
+            (tx_hash,)
+        )
+        await self.conn.commit()
+
+    async def mark_failed(self, tx_hash: str):
+        await self.conn.execute(
+            "UPDATE trades SET status='failed' WHERE transaction_hash=?",
+            (tx_hash,)
+        )
+        await self.conn.commit()
+
     async def mark_as_buy_processed(self, tx_hash: str) -> bool:
         """更新处理状态"""
         cursor = await self.conn.execute(
@@ -634,6 +694,13 @@ class AsyncPolymarketTradeManager:
         else:
             # 内存模式（同步逻辑，但为了接口一致需保持在 async 函数内）
             return len(self.trades)
+
+    async def get_latest_timestamp(self) -> int:
+        async with self.conn.execute(
+            "SELECT MAX(timestamp) FROM trades"
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row and row[0] else 0
 
     @staticmethod
     def timestamp_to_str(ts: int) -> str:
@@ -681,5 +748,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
 
 
