@@ -37,7 +37,11 @@ async def main():
     # 2. 初始化 SQL
     AsyncPolymarketTradeManager()
 
-     # 3. 授权 
+    # 3. 授权 
+    coll_params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+    coll_info = client.get_balance_allowance(params=coll_params)
+    print(f"USDC balance: {coll_info.get('balance')}, allowances: {coll_info.get('allowances')}")
+
     w3 = Web3(Web3.HTTPProvider(POLYGON_RPC))
     approve_usdc(w3,PRIVATE_KEY,MAIN_SPENDER,USDC_ADDRESS)
     #setup_approvals() 
@@ -47,9 +51,10 @@ async def main():
     #trading = TradingThread(client,  interval=0.2)
     #polling.run()
     #trading.run()
+    # trade  1   
     await asyncio.gather(
-        polling_task(10.0),
-        trading_task(client, 0.2),#    处理tokenid 结束了的订单
+        polling_task(0.6),
+        trading_task(client, 0.5),#    处理tokenid 结束了的订单
         return_exceptions=True   
     )
 
@@ -59,6 +64,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("收到 Ctrl+C，程序退出")
+
 
 
 
